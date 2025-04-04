@@ -1,0 +1,103 @@
+let port;
+let reader;
+let latestBPM = 0;
+let heartRateHistory = [];
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  background(0);
+
+  let connectButton = createButton("Connect Arduino");
+  connectButton.position(20, 20);
+  connectButton.mousePressed(connectToSerial);
+}
+
+async function connectToSerial() {
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+
+    reader = port.readable.getReader();
+    readSerialData();
+    console.log("Serial connection successful!");
+  } catch (err) {
+    console.error("Serial connection failed:", err);
+    alert("Please check Arduino connection");
+  }
+}
+
+async function readSerialData() {
+  while (port.readable) {
+    try {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      let data = new TextDecoder().decode(value).trim();
+      let bpm = parseInt(data.replace(/\D/g, ""));
+
+      if (!isNaN(bpm) && bpm > 40) {
+        latestBPM = bpm;
+        heartRateHistory.push(latestBPM);
+        if (heartRateHistory.length > 60) {
+          heartRateHistory.shift();
+        }
+      } else if (bpm === 0) {
+        heartRateHistory = [];
+        latestBPM = 0;
+      }
+
+    } catch (err) {
+      console.error("Failed to read data:", err);
+      break;
+    }
+  }
+}
+
+function drawHeart(x, y, size) {
+  beginShape();
+  for (let i = 0; i < TWO_PI; i += 0.1) {
+    let px = x + size * (16 * pow(sin(i), 3));
+    let py = y - size * (13 * cos(i) - 5 * cos(2 * i)
+             - 2 * cos(3 * i) - cos(4 * i));
+    vertex(px, py);
+  }
+  endShape(CLOSE);
+}
+
+function draw() {
+  background(0);
+
+  let avgBPM = heartRateHistory.length > 0
+    ? heartRateHistory.reduce((a, b) => a + b, 0) / heartRateHistory.length
+    : 0;
+
+  let heartSize = 60; // Static size in v1
+
+  fill(255, 0, 0);
+  noStroke();
+  drawHeart(width / 2, height / 2, heartSize);
+
+  stroke(255);
+  noFill();
+  beginShape();
+  for (let i = 0; i < heartRateHistory.length; i++) {
+    let x = map(i, 0, heartRateHistory.length, 0, width);
+    let y = map(heartRateHistory[i], 40, 120,
+                height / 2 + 100, height / 2 - 100);
+    vertex(x, y);
+  }
+  endShape();
+
+  fill(255);
+  textSize(32);
+  textAlign(CENTER, CENTER);
+  if (latestBPM > 0) {
+    text("Current Heart Rate: " + int(latestBPM) + " BPM",
+         width / 2, height - 100);
+    text("Average Heart Rate: " + int(avgBPM) + " BPM",
+         width / 2, height - 60);
+  } else {
+    text("No heartbeat detected", width / 2, height - 80);
+  }
+}
+
