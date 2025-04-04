@@ -1,0 +1,120 @@
+// === Global Variables ===
+let port;                // Serial port object
+let reader;              // Reader for incoming serial data
+let latestBPM = 0;       // Most recent BPM value from Arduino
+let heartRateHistory = [];  // Array to store recent BPM values for averaging and graphing
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);  // Set canvas to full window size
+  background(0);                            // Black background
+
+  // Create and position "Connect Arduino" button
+  let connectButton = createButton("Connect Arduino");
+  connectButton.position(20, 20);
+  connectButton.mousePressed(connectToSerial);  // When button is clicked, run connectToSerial()
+}
+
+async function connectToSerial() {
+  try {
+    // Request serial port from browser
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });  // Open port at 115200 baud
+
+    // Set up reader for incoming serial data
+    reader = port.readable.getReader();
+    readSerialData();  // Start reading data
+    console.log("Serial connection successful!");
+  } catch (err) {
+    console.error("Serial connection failed:", err);
+    alert("Please check Arduino connection");
+  }
+}
+
+async function readSerialData() {
+  while (port.readable) {
+    try {
+      const { value, done } = await reader.read();  // Read from serial buffer
+      if (done) break;  // Exit if stream is done
+
+      // Convert incoming bytes into text, then trim whitespace
+      let data = new TextDecoder().decode(value).trim();
+
+      // Extract numbers from data string (in case of noisy input)
+      let bpm = parseInt(data.replace(/\D/g, ""));
+
+      // Only accept valid BPM values above 40 (to reduce noise)
+      if (!isNaN(bpm) && bpm > 40) {
+        latestBPM = bpm;  // Update current BPM
+        heartRateHistory.push(latestBPM);  // Add to history array
+
+        // Keep history at max 60 values for smooth scrolling graph
+        if (heartRateHistory.length > 60) {
+          heartRateHistory.shift();
+        }
+      } 
+      // If BPM is 0 (e.g. no heartbeat), clear everything
+      else if (bpm === 0) {
+        heartRateHistory = [];
+        latestBPM = 0;
+      }
+
+    } catch (err) {
+      console.error("Failed to read data:", err);
+      break;
+    }
+  }
+}
+
+// === Heart Drawing Function ===
+// Draw a mathematical heart shape at (x, y) with given size
+function drawHeart(x, y, size) {
+  beginShape();
+  for (let i = 0; i < TWO_PI; i += 0.1) {
+    let px = x + size * (16 * pow(sin(i), 3));
+    let py = y - size * (
+      13 * cos(i) -
+      5 * cos(2 * i) -
+      2 * cos(3 * i) -
+      cos(4 * i)
+    );
+    vertex(px, py);
+  }
+  endShape(CLOSE);
+}
+
+function draw() {
+  background(0);  // Clear the screen every frame
+
+  // === Compute Average BPM ===
+  let avgBPM = heartRateHistory.length > 0
+    ? heartRateHistory.reduce((a, b) => a + b, 0) / heartRateHistory.length
+    : 0;
+
+  // === Draw static heart in center (v1 has no animation yet) ===
+  let heartSize = 60;
+  fill(255, 0, 0);  // Red heart
+  noStroke();
+  drawHeart(width / 2, height / 2, heartSize);
+
+  // === Draw BPM Graph Line ===
+  stroke(255);  // White line
+  noFill();
+  beginShape();
+  for (let i = 0; i < heartRateHistory.length; i++) {
+    let x = map(i, 0, heartRateHistory.length, 0, width);  // Evenly space
+    let y = map(heartRateHistory[i], 40, 120, height / 2 + 100, height / 2 - 100);  // Map BPM to y-axis
+    vertex(x, y);
+  }
+  endShape();
+
+  // === Display BPM Values ===
+  fill(255);
+  textSize(32);
+  textAlign(CENTER, CENTER);
+  if (latestBPM > 0) {
+    text("Current Heart Rate: " + int(latestBPM) + " BPM", width / 2, height - 100);
+    text("Average Heart Rate: " + int(avgBPM) + " BPM", width / 2, height - 60);
+  } else {
+    text("No heartbeat detected", width / 2, height - 80);
+  }
+}
