@@ -1,0 +1,163 @@
+/**
+ * HeartBeat Visualizer — Version 2
+ * 
+ * Description:
+ * This is Version 2 of a heartbeat visualization project that receives real-time
+ * BPM (beats per minute) data from an Arduino with a PulseSensor.
+ * 
+ * Features in Version 2:
+ * - Static red heart drawn in the center of the canvas
+ * - Displays current BPM and average BPM
+ * - Real-time heartbeat graph
+ * - Plays a synthetic “thump” sound on each heartbeat using p5.Oscillator
+ * 
+ * Created by Yaxin Lin
+ */
+
+let port;                     // Serial port object
+let reader;                   // Reader object for reading serial data
+let latestBPM = 0;            // Most recent BPM value received from Arduino
+let heartRateHistory = [];   // Stores last 60 BPM values for graphing and averaging
+
+// === Sound-related variables ===
+let osc;                      // p5.Oscillator for generating sound
+let envelope;                 // p5.Envelope to control the sound's ADSR envelope
+let soundEnabled = false;    // Boolean flag to prevent sound errors before audio starts
+
+function setup() {
+  createCanvas(windowWidth, windowHeight); // Create full-screen canvas
+  background(0);                           // Set background color to black
+
+  // Create a button to connect to the Arduino via Web Serial API
+  let connectButton = createButton("Connect Arduino");
+  connectButton.position(20, 20);
+  connectButton.mousePressed(connectToSerial);  // Start serial connection on click
+
+  // === Sound setup ===
+  osc = new p5.Oscillator('sine');   // Sine wave oscillator (smoothest for a “heartbeat” sound)
+  envelope = new p5.Envelope();      // Envelope controls amplitude shape
+  envelope.setADSR(0.01, 0.1, 0.1, 0.2);  // Attack, Decay, Sustain, Release
+  envelope.setRange(0.5, 0);         // Maximum volume: 0.5
+
+  osc.start();   // Start the oscillator (muted by default)
+  osc.amp(0);    // Set initial amplitude to 0
+
+  userStartAudio();  // Required by browser security for sound to work
+  soundEnabled = true;
+}
+
+async function connectToSerial() {
+  try {
+    // Ask the user to select a serial port
+    port = await navigator.serial.requestPort();
+
+    // Open the port with the correct baud rate
+    await port.open({ baudRate: 115200 });
+
+    // Create a reader to continuously read data from the port
+    reader = port.readable.getReader();
+
+    // Start reading serial data
+    readSerialData();
+    console.log("Serial connection successful!");
+  } catch (err) {
+    console.error("Serial connection failed:", err);
+    alert("Please check Arduino connection.");
+  }
+}
+
+async function readSerialData() {
+  while (port.readable) {
+    try {
+      const { value, done } = await reader.read(); // Read incoming bytes
+      if (done) break;
+
+      // Convert bytes to string and trim whitespace
+      let data = new TextDecoder().decode(value).trim();
+
+      // Extract numbers only from data
+      let bpm = parseInt(data.replace(/\D/g, ""));
+
+      // Only accept BPM values greater than 40 (filter noise)
+      if (!isNaN(bpm) && bpm > 40) {
+        latestBPM = bpm;                // Update most recent BPM value
+        heartRateHistory.push(latestBPM);  // Add to history
+
+        // Limit history array to last 60 entries
+        if (heartRateHistory.length > 60) {
+          heartRateHistory.shift();
+        }
+
+        // === New in v2: Play heartbeat sound ===
+        if (soundEnabled) {
+          osc.freq(60);         // Fixed pitch (can later map to BPM)
+          envelope.play(osc);   // Trigger the envelope to play the tone
+        }
+      } 
+      // If no heartbeat detected, reset everything
+      else if (bpm === 0) {
+        heartRateHistory = [];
+        latestBPM = 0;
+      }
+
+    } catch (err) {
+      console.error("Failed to read data:", err);
+      break;
+    }
+  }
+}
+
+// === Draw a heart shape ===
+// Based on a parametric heart curve
+function drawHeart(x, y, size) {
+  beginShape();
+  for (let i = 0; i < TWO_PI; i += 0.1) {
+    let px = x + size * (16 * pow(sin(i), 3));
+    let py = y - size * (
+      13 * cos(i) -
+      5 * cos(2 * i) -
+      2 * cos(3 * i) -
+      cos(4 * i)
+    );
+    vertex(px, py);
+  }
+  endShape(CLOSE);
+}
+
+function draw() {
+  background(0);  // Clear screen every frame
+
+  // === Compute average BPM from history ===
+  let avgBPM = heartRateHistory.length > 0
+    ? heartRateHistory.reduce((a, b) => a + b, 0) / heartRateHistory.length
+    : 0;
+
+  // === Draw heart shape in center ===
+  let heartSize = 60;       // Static size for now (animation will come in v3)
+  fill(255, 0, 0);          // Red color
+  noStroke();
+  drawHeart(width / 2, height / 2, heartSize);
+
+  // === Draw scrolling BPM graph ===
+  stroke(255);
+  noFill();
+  beginShape();
+  for (let i = 0; i < heartRateHistory.length; i++) {
+    let x = map(i, 0, heartRateHistory.length, 0, width);  // Spread across canvas
+    let y = map(heartRateHistory[i], 40, 120,
+                height / 2 + 100, height / 2 - 100);  // Map BPM to Y position
+    vertex(x, y);
+  }
+  endShape();
+
+  // === Display text: current + average BPM ===
+  fill(255);
+  textSize(32);
+  textAlign(CENTER, CENTER);
+  if (latestBPM > 0) {
+    text("Current Heart Rate: " + int(latestBPM) + " BPM", width / 2, height - 100);
+    text("Average Heart Rate: " + int(avgBPM) + " BPM", width / 2, height - 60);
+  } else {
+    text("No heartbeat detected", width / 2, height - 80);
+  }
+}
