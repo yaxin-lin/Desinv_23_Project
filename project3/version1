@@ -1,75 +1,103 @@
+/**
+ * HeartBeat Visualizer — Version 1
+ * 
+ * Description:
+ * This is the first version of the heartbeat visualization project.
+ * It receives real-time heart rate (BPM) data from an Arduino with a PulseSensor,
+ * displays a red heart on screen, draws a live BPM graph, and prints both
+ * the current and average BPM as text.
+ * 
+ * Features in Version 1:
+ * Receives BPM data from Arduino over Web Serial
+ * Draws a red heart shape in the center of the canvas
+ * Displays current and average BPM
+ * Renders a scrolling line graph of heart rate history
+ * No sound, animation, or color changes yet (added in future versions)
+ */
+
 // === Global Variables ===
-let port;                // Serial port object
-let reader;              // Reader for incoming serial data
-let latestBPM = 0;       // Most recent BPM value from Arduino
-let heartRateHistory = [];  // Array to store recent BPM values for averaging and graphing
+
+let port;                // Object representing the selected serial port
+let reader;              // Stream reader to read incoming serial data
+let latestBPM = 0;       // Stores the most recent valid BPM value from Arduino
+let heartRateHistory = [];  // Array to store the latest 60 BPM values (for graphing & averaging)
+
 
 function setup() {
-  createCanvas(windowWidth, windowHeight);  // Set canvas to full window size
-  background(0);                            // Black background
+  createCanvas(windowWidth, windowHeight);  // Create a canvas the size of the browser window
+  background(0);                            // Set background color to black
 
-  // Create and position "Connect Arduino" button
+  // Create a button labeled "Connect Arduino" for serial connection
   let connectButton = createButton("Connect Arduino");
-  connectButton.position(20, 20);
-  connectButton.mousePressed(connectToSerial);  // When button is clicked, run connectToSerial()
+  connectButton.position(20, 20);           // Place it near the top-left corner
+  connectButton.mousePressed(connectToSerial);  // Set function to run when the button is clicked
 }
 
 async function connectToSerial() {
   try {
-    // Request serial port from browser
+    // Ask the user to select a serial port
     port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 115200 });  // Open port at 115200 baud
 
-    // Set up reader for incoming serial data
+    // Open the selected port with a baud rate that matches the Arduino sketch
+    await port.open({ baudRate: 115200 });
+
+    // Set up a stream reader to continuously receive incoming data
     reader = port.readable.getReader();
-    readSerialData();  // Start reading data
+
+    // Start reading incoming serial data from the Arduino
+    readSerialData();
+
     console.log("Serial connection successful!");
   } catch (err) {
+    // If something goes wrong during connection
     console.error("Serial connection failed:", err);
     alert("Please check Arduino connection");
   }
 }
 
 async function readSerialData() {
+  // Continuously read from the serial stream
   while (port.readable) {
     try {
-      const { value, done } = await reader.read();  // Read from serial buffer
-      if (done) break;  // Exit if stream is done
+      // Read one chunk of data from the stream
+      const { value, done } = await reader.read();
+      if (done) break;  // Exit the loop if the stream ends
 
-      // Convert incoming bytes into text, then trim whitespace
+      // Decode the received bytes into a string and trim any whitespace
       let data = new TextDecoder().decode(value).trim();
 
-      // Extract numbers from data string (in case of noisy input)
+      // Extract numeric portion of the string (strip any non-digits)
       let bpm = parseInt(data.replace(/\D/g, ""));
 
-      // Only accept valid BPM values above 40 (to reduce noise)
+      // Only accept BPM values greater than 40 to filter out noise
       if (!isNaN(bpm) && bpm > 40) {
-        latestBPM = bpm;  // Update current BPM
-        heartRateHistory.push(latestBPM);  // Add to history array
+        latestBPM = bpm;                 // Store the valid BPM
+        heartRateHistory.push(latestBPM);  // Add to BPM history array
 
-        // Keep history at max 60 values for smooth scrolling graph
+        // Limit the history to the most recent 60 values
         if (heartRateHistory.length > 60) {
-          heartRateHistory.shift();
+          heartRateHistory.shift();  // Remove the oldest value
         }
-      } 
-      // If BPM is 0 (e.g. no heartbeat), clear everything
-      else if (bpm === 0) {
-        heartRateHistory = [];
-        latestBPM = 0;
+
+      // If we receive a 0 (signal that heart is not detected), reset everything
+      } else if (bpm === 0) {
+        heartRateHistory = [];  // Clear the history
+        latestBPM = 0;          // Set current BPM to 0
       }
 
     } catch (err) {
       console.error("Failed to read data:", err);
-      break;
+      break;  // Exit the loop if error occurs
     }
   }
 }
 
-// === Heart Drawing Function ===
-// Draw a mathematical heart shape at (x, y) with given size
+// === Function to draw a heart shape ===
+// Parameters: (x, y) = center position, size = scale of the heart
 function drawHeart(x, y, size) {
   beginShape();
   for (let i = 0; i < TWO_PI; i += 0.1) {
+    // Use parametric heart formula
     let px = x + size * (16 * pow(sin(i), 3));
     let py = y - size * (
       13 * cos(i) -
@@ -83,38 +111,42 @@ function drawHeart(x, y, size) {
 }
 
 function draw() {
-  background(0);  // Clear the screen every frame
+  background(0);  // Clear screen with black each frame
 
-  // === Compute Average BPM ===
+  // === Calculate Average BPM from recent history ===
   let avgBPM = heartRateHistory.length > 0
     ? heartRateHistory.reduce((a, b) => a + b, 0) / heartRateHistory.length
-    : 0;
+    : 0;  // If no data, average is 0
 
-  // === Draw static heart in center (v1 has no animation yet) ===
-  let heartSize = 60;
-  fill(255, 0, 0);  // Red heart
-  noStroke();
-  drawHeart(width / 2, height / 2, heartSize);
+  // === Draw a fixed-size red heart at center ===
+  let heartSize = 60;      // Static heart size (no animation in v1)
+  fill(255, 0, 0);         // Red fill
+  noStroke();              // No border
+  drawHeart(width / 2, height / 2, heartSize);  // Draw heart in canvas center
 
-  // === Draw BPM Graph Line ===
-  stroke(255);  // White line
+  // === Draw scrolling BPM graph (line graph of recent heart rates) ===
+  stroke(255);  // White stroke for line
   noFill();
   beginShape();
   for (let i = 0; i < heartRateHistory.length; i++) {
-    let x = map(i, 0, heartRateHistory.length, 0, width);  // Evenly space
-    let y = map(heartRateHistory[i], 40, 120, height / 2 + 100, height / 2 - 100);  // Map BPM to y-axis
-    vertex(x, y);
+    let x = map(i, 0, heartRateHistory.length, 0, width);  // Spread data across canvas width
+    let y = map(heartRateHistory[i], 40, 120,
+                height / 2 + 100, height / 2 - 100);       // Map BPM range to vertical space
+    vertex(x, y);  // Add graph point
   }
   endShape();
 
-  // === Display BPM Values ===
-  fill(255);
-  textSize(32);
-  textAlign(CENTER, CENTER);
+  // === Draw textual BPM info at bottom ===
+  fill(255);                 // White text
+  textSize(32);              // Large font
+  textAlign(CENTER, CENTER); // Center alignment
+
   if (latestBPM > 0) {
+    // Show current and average heart rate
     text("Current Heart Rate: " + int(latestBPM) + " BPM", width / 2, height - 100);
     text("Average Heart Rate: " + int(avgBPM) + " BPM", width / 2, height - 60);
   } else {
+    // If no heartbeat, show fallback message
     text("No heartbeat detected", width / 2, height - 80);
   }
 }
