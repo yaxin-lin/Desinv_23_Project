@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""
+Face-Target Challenge
+---------------------
+A webcam party game for up to four players. Each player’s face is tracked in real
+time; keep your face inside the moving green square for two full seconds to earn
+points. Leave the target area too soon and you’ll lose points. When the 60-second
+timer expires, the highest score wins.
+
+Dependencies
+~~~~~~~~~~~~
+pip install opencv-python numpy
+Place *haarcascade_frontalface_default.xml* in the same folder as this script
+(or give an absolute path below).
+
+Author : (your name here)
+Date   : May 8 2025
+"""
+import cv2
+import time
+import math
+import random
+import numpy as np
+
+
+def main() -> None:
+    # ------------------------------------------------------------------
+    # 1. Initialization
+    # ------------------------------------------------------------------
+    # • Load the Haar cascade model for frontal-face detection.
+    # • Open the default webcam (index 0).
+    # • Prepare global game parameters.
+    # ------------------------------------------------------------------
+    face_cascade = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
+    if face_cascade.empty():
+        print("Failed to load Haar cascade. Check the file path.")
+        return
+
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Cannot open webcam.")
+        return
+
+    # ----- game-state flags -----
+    game_started = False          # user pressed “S”?
+    game_over = False             # stop the main loop?
+    total_time = 60               # total round length (seconds)
+    start_time = None             # wall-clock timestamp when round begins
+
+    # ----- multi-player bookkeeping -----
+    # {player_id: {"score": int,
+    #              "center": (x, y),
+    #              "stay_start": float | None}}
+    player_info = {}
+    max_players = 4
+    next_player_id = 1
+    distance_threshold = 80       # pixels; face centers closer than this are
+                                  # considered the *same* player in consecutive frames
+
+    required_stay_time = 2.0      # seconds a face must stay in target to score
+    score_gain = 10
+    score_loss = 5
+
+    # ----- camera resolution -----
+    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # ----- moving-target (green square) parameters -----
+    target_size = 80              # “radius” from square center to any edge
+    center_x, center_y = width // 2, height // 2
+    t = 0.0                       # time parameter for sinusoidal motion
+    speed = 1.5                   # how quickly the target swings
+    radius = 100                  # amplitude of the swing (pixels)
+    offset_angle_x = random.random() * 2 * math.pi  # random phase so every game feels different
+    offset_angle_y = random.random() * 2 * math.pi
+
+    # ------------------------------------------------------------------
+    # 2. Title / Start-screen loop
+    # ------------------------------------------------------------------
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        cv2.putText(frame,
+                    "Press 'S' to start, 'Q' to quit",
+                    (50, 220),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 255),
+                    2)
+        cv2.imshow("Face Game", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord('s'), ord('S')):
+            game_started = True
+            start_time = time.time()
+            break
+        if key in (ord('q'), ord('Q')):
+            cap.release()
+            cv2.destroyAllWindows()
+            return
+
+    # ------------------------------------------------------------------
+    # 3. Main game loop
+    # ------------------------------------------------------------------
+    while game_started and not game_over:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to read frame from webcam.")
+            break
+
+        # ----- countdown timer -----
+        current_time = time.time()
+        elapsed_time = current_time - start_time
+        remaining_time = total_time - elapsed_time
+        if remaining_time <= 0:
+            game_over = True
+            break
+
+        # ----- update target position (simple 2-D Lissajous swing) -----
+        offset_x = int(radius * math.sin(t * 0.02 + offset_angle_x))
+        offset_y = int(radius * math.cos(t * 0.02 + offset_angle_y))
+        dynamic_center_x = center_x + offset_x
+        dynamic_center_y = center_y + offset_y
+
+        target_left   = dynamic_center_x - target_size
+        target_right  = dynamic_center_x + target_size
+        target_top    = dynamic_center_y - target_size
+        target_bottom = dynamic_center_y + target_size
+
+        # face detection
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray,
+                                              scaleFactor=1.3,
+                                              minNeighbors=5)
+
+        matched_players = set()  # players that *were* matched this frame
+
+        # -- step 1: associate every detected face with a player slot ----
+        for (x, y, w, h) in faces:
+            face_center_x = x + w // 2
+            face_center_y = y + h // 2
+
+            # find the nearest existing player center, if any
+            assigned_player_id = None
+            min_dist = float('inf')
+            for pid, info in player_info.items():
+                px, py = info['center']
+                dist_sq = (px - face_center_x) ** 2 + (py - face_center_y) ** 2
+                if dist_sq < min_dist:
+                    min_dist = dist_sq
+                    assigned_player_id = pid
+
+            # if close enough → same player; otherwise spawn new player
+            if assigned_player_id is not None and math.sqrt(min_dist) < distance_threshold:
+                player_info[assigned_player_id]['center'] = (face_center_x, face_center_y)
+                matched_players.add(assigned_player_id)
+            else:
+                if len(player_info) < max_players:        # room for a new challenger?
+                    assigned_player_id = next_player_id
+                    next_player_id += 1
+                    player_info[assigned_player_id] = {
+                        'center': (face_center_x, face_center_y),
+                        'score': 0,
+                        'stay_start': None
+                    }
+                    matched_players.add(assigned_player_id)
+
+            # draw visual aids for each face
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+            cv2.circle(frame, (face_center_x, face_center_y), 5, (0, 0, 255), -1)
+
+        # -- step 2: award or deduct points based on position history ----
+        for pid, info in player_info.items():
+            cx, cy = info['center']
+            stay_start = info['stay_start']
+
+            # if we *did not* see the player this frame, treat as having left the target
+            if pid not in matched_players:
+                if stay_start is not None:                # they were inside previously
+                    player_info[pid]['score'] -= score_loss
+                player_info[pid]['stay_start'] = None
+                continue
+
+            # inside the moving square?
+            in_target = (target_left < cx < target_right) and (target_top < cy < target_bottom)
+
+            if in_target:
+                if stay_start is None:                    # just entered
+                    player_info[pid]['stay_start'] = current_time
+                else:
+                    duration = current_time - stay_start
+                    if duration >= required_stay_time:
+                        player_info[pid]['score'] += score_gain
+                        player_info[pid]['stay_start'] = None  # reset timer
+                        # change swing phase to keep things fresh
+                        offset_angle_x = random.random() * 2 * math.pi
+                        offset_angle_y = random.random() * 2 * math.pi
+            else:
+                if stay_start is not None:                # left early
+                    player_info[pid]['score'] -= score_loss
+                player_info[pid]['stay_start'] = None
+
+        # draw the moving target 
+        cv2.rectangle(frame,
+                      (target_left, target_top),
+                      (target_right, target_bottom),
+                      (0, 255, 0),
+                      3)
+
+        # ----- HUD: timer and scoreboard -----
+        cv2.putText(frame,
+                    f"Time left: {int(remaining_time)}s",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255, 255, 0),
+                    2)
+
+        y_offset = 60
+        for pid, info in sorted(player_info.items()):
+            cv2.putText(frame,
+                        f"Player {pid}: {info['score']}",
+                        (10, y_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (255, 255, 0),
+                        2)
+            y_offset += 30
+
+        # advance “time” for sinusoidal motion
+        t += speed
+        cv2.imshow("Face Game", frame)
+
+        # graceful early quit
+        if cv2.waitKey(30) & 0xFF == ord('q'):
+            game_over = True
+            break
+
+    # ------------------------------------------------------------------
+    # 4. Round finished — announce the winner
+    # ------------------------------------------------------------------
+    winner_id, winner_score = None, None
+    if player_info:
+        winner_id, stats = max(player_info.items(),
+                               key=lambda item: item[1]['score'])
+        winner_score = stats['score']
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    if winner_id is None or winner_score <= 0:
+        print("Game Over! No winner this time.")
+    else:
+        print(f"Game Over! Player {winner_id} wins with {winner_score} points.")
+
+
+if __name__ == "__main__":
+    main()
+
