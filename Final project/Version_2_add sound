@@ -1,0 +1,233 @@
+
+Run   :  python face_game.py
+Needs :  pip install opencv-python pygame numpy
+
+
+import cv2
+import time
+import math
+import random
+import numpy as np
+import pygame
+
+
+def main() -> None:
+    # -------------------------------------------------------------------
+    # fire up Pygame’s sound system
+    # -------------------------------------------------------------------
+    pygame.mixer.init()
+
+    # quick-and-dirty load of our three MP3s
+    start_sound   = pygame.mixer.Sound("game-start-6104.mp3")
+    loop_music    = pygame.mixer.Sound("game-music-loop-6-144641.mp3")
+    gameover_beep = pygame.mixer.Sound("game-over-39-199830.mp3")
+
+    # -------------------------------------------------------------------
+    # OpenCV warm-up: face detector + webcam
+    # -------------------------------------------------------------------
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    if face_cascade.empty():
+        print("Couldn’t load the Haar cascade… check the path?")
+        return
+
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("No webcam detected. Bye!")
+        return
+
+    # -------------------------------------------------------------------
+    # game-state vars
+    # -------------------------------------------------------------------
+    game_started   = False
+    game_over      = False
+    total_time     = 60                    # one-minute round
+    start_time     = None
+
+    # ---- multi-player bookkeeping (faces = players) ----
+    player_info        = {}                # pid → {score, center, stay_start}
+    max_players        = 4
+    next_player_id     = 1
+    distance_threshold = 80                # px: link a face to an existing pid
+
+    required_stay_time = 2.0               # seconds to earn points
+    score_gain         = 10
+    score_loss         = 5
+
+    # camera resolution
+    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # ---- wobbly target setup ----
+    target_size   = 80                     # half-width of the green square
+    center_x      = width // 2
+    center_y      = height // 2
+    t             = 0.0
+    speed         = 1.5                    # how fast the square wiggles
+    radius        = 100                    # wiggle amplitude
+    offset_xphase = random.random() * 2 * math.pi
+    offset_yphase = random.random() * 2 * math.pi
+
+    # -------------------------------------------------------------------
+    # “press S to start” splash screen
+    # -------------------------------------------------------------------
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+
+        cv2.putText(frame, "Press 'S' to start, 'Q' to quit",
+                    (50, 220), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                    (0, 255, 255), 2)
+        cv2.imshow("Face Game", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord('s'), ord('S')):
+            start_sound.play()
+            time.sleep(1.0)                # let the jingle finish
+            loop_music.play(loops=-1)       # background BGM, endless
+            game_started = True
+            start_time   = time.time()
+            break
+        if key in (ord('q'), ord('Q')):
+            cap.release()
+            cv2.destroyAllWindows()
+            return
+
+    # -------------------------------------------------------------------
+    # main game loop
+    # -------------------------------------------------------------------
+    while game_started and not game_over:
+        ok, frame = cap.read()
+        if not ok:
+            print("Webcam feed died :(")
+            break
+
+        # clock & countdown ------------------------------------------------
+        now            = time.time()
+        elapsed        = now - start_time
+        secs_left      = total_time - elapsed
+        if secs_left <= 0:
+            game_over = True
+            break
+
+        # move the green target square around -----------------------------
+        dx = int(radius * math.sin(t * 0.02 + offset_xphase))
+        dy = int(radius * math.cos(t * 0.02 + offset_yphase))
+        cx = center_x + dx
+        cy = center_y + dy
+        left, right = cx - target_size, cx + target_size
+        top, bottom = cy - target_size, cy + target_size
+
+        # face detection ---------------------------------------------------
+        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+
+        matched = set()                    # pids we saw *this* frame
+
+        # Step 1: assign each face to a player id --------------------------
+        for (x, y, w, h) in faces:
+            fx, fy = x + w // 2, y + h // 2  # face center
+
+            # find nearest existing player
+            nearest_id, best_d2 = None, float('inf')
+            for pid, info in player_info.items():
+                px, py = info['center']
+                d2 = (px - fx) ** 2 + (py - fy) ** 2
+                if d2 < best_d2:
+                    best_d2, nearest_id = d2, pid
+
+            if nearest_id is not None and math.sqrt(best_d2) < distance_threshold:
+                # continue tracking this player
+                player_info[nearest_id]['center'] = (fx, fy)
+                matched.add(nearest_id)
+            else:
+                # new face → new player slot (if we have space)
+                if len(player_info) < max_players:
+                    pid = next_player_id
+                    next_player_id += 1
+                    player_info[pid] = dict(score=0,
+                                            center=(fx, fy),
+                                            stay_start=None)
+                    matched.add(pid)
+
+            # little blue box + red dot for each face
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+            cv2.circle(frame, (fx, fy), 5, (0, 0, 255), -1)
+
+        # Step 2: scoring logic -------------------------------------------
+        for pid, info in player_info.items():
+            fx, fy       = info['center']
+            stay_started = info['stay_start']
+
+            if pid not in matched:
+                # face vanished this frame → call it a bail-out
+                if stay_started is not None:
+                    info['score'] -= score_loss
+                info['stay_start'] = None
+                continue
+
+            inside = left < fx < right and top < fy < bottom
+            if inside:
+                if stay_started is None:               # just entered
+                    info['stay_start'] = now
+                elif now - stay_started >= required_stay_time:
+                    info['score'] += score_gain        # ding!
+                    info['stay_start'] = None          # reset timer
+                    # randomize swing phase so square jumps somewhere new
+                    offset_xphase = random.random() * 2 * math.pi
+                    offset_yphase = random.random() * 2 * math.pi
+            else:
+                if stay_started is not None:           # left early
+                    info['score'] -= score_loss
+                info['stay_start'] = None
+
+        # draw the moving green box ---------------------------------------
+        cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 3)
+
+        # HUD: countdown + scores -----------------------------------------
+        cv2.putText(frame, f"Time left: {int(secs_left)}s",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    1, (255, 255, 0), 2)
+
+        y = 60
+        for pid, data in sorted(player_info.items()):
+            cv2.putText(frame, f"Player {pid}: {data['score']}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX,
+                        1, (255, 255, 0), 2)
+            y += 30
+
+        # push next frame --------------------------------------------------
+        t += speed
+        cv2.imshow("Face Game", frame)
+
+        if cv2.waitKey(30) & 0xFF == ord('q'):
+            game_over = True
+            break
+
+    # -------------------------------------------------------------------
+    # cleanup & winner announcement
+    # -------------------------------------------------------------------
+    loop_music.stop()
+    gameover_beep.play()
+
+    winner_id, winner_score = None, None
+    if player_info:
+        winner_id, pdata = max(player_info.items(),
+                               key=lambda it: it[1]['score'])
+        winner_score = pdata['score']
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    if winner_id is None or winner_score <= 0:
+        print("Game Over — nobody cracked zero points. Tough crowd!")
+    else:
+        print(f"Game Over — Player {winner_id} wins with {winner_score} points!")
+
+    # give the ‘game over’ jingle a heartbeat before Python bails out
+    time.sleep(2)
+
+
+if __name__ == "__main__":
+    main()
