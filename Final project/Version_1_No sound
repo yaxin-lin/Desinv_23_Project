@@ -2,8 +2,7 @@ Dependencies
 ~~~~~~~~~~~~
 pip install opencv-python numpy
 
-Author : Yaxin Lin
-"""
+
 import cv2
 import time
 import math
