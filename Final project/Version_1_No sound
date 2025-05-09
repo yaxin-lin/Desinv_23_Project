@@ -1,20 +1,8 @@
-#!/usr/bin/env python3
-"""
-Face-Target Challenge
----------------------
-A webcam party game for up to four players. Each player’s face is tracked in real
-time; keep your face inside the moving green square for two full seconds to earn
-points. Leave the target area too soon and you’ll lose points. When the 60-second
-timer expires, the highest score wins.
-
 Dependencies
 ~~~~~~~~~~~~
 pip install opencv-python numpy
-Place *haarcascade_frontalface_default.xml* in the same folder as this script
-(or give an absolute path below).
 
-Author : (your name here)
-Date   : May 8 2025
+Author : Yaxin Lin
 """
 import cv2
 import time
