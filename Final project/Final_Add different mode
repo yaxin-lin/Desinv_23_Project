@@ -1,0 +1,324 @@
+import cv2
+import time
+import math
+import random
+import numpy as np
+
+def main():
+    # ============================
+    # 1. Ask the user to choose a detection mode
+    # ============================
+    print("Choose a detection mode:")
+    print("1. Face detection (frontalface)")
+    print("2. Eye detection (eye)")
+    choice = input("Enter mode number: ")
+
+    if choice == '1':
+        classifier_file = "haarcascade_frontalface_default.xml"
+        print("Mode: Face Detection")
+        # Mode-specific parameters for face detection (just examples)
+        mode_params = {
+            'required_stay_time': 2.0,       # how long to stay in main target
+            'score_gain': 10,               # how many points to gain
+            'score_loss': 5,                # how many points to lose
+            'target_size': 80,              # main target area size
+            'spawn_cooldown_min': 5,        # min interval for power-up/punishment zones
+            'spawn_cooldown_max': 10,       # max interval
+        }
+    elif choice == '2':
+        classifier_file = "haarcascade_eye.xml"
+        print("Mode: Eye Detection")
+        # Mode-specific parameters for eye detection
+        mode_params = {
+            'required_stay_time': 2.5,      # possibly more difficult, require slightly longer
+            'score_gain': 12,
+            'score_loss': 6,
+            'target_size': 60,              # smaller target area
+            'spawn_cooldown_min': 4,
+            'spawn_cooldown_max': 8,
+        }
+    else:
+        print("Invalid input, defaulting to Face Detection.")
+        classifier_file = "haarcascade_frontalface_default.xml"
+        mode_params = {
+            'required_stay_time': 2.0,
+            'score_gain': 10,
+            'score_loss': 5,
+            'target_size': 80,
+            'spawn_cooldown_min': 5,
+            'spawn_cooldown_max': 10,
+        }
+
+    # ============================
+    # 2. Initialize OpenCV and load the chosen cascade
+    # ============================
+    cascade_path = cv2.data.haarcascades + classifier_file
+    detector = cv2.CascadeClassifier(cascade_path)
+    if detector.empty():
+        print(f"Failed to load cascade. Please ensure {cascade_path} exists.")
+        return
+
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Cannot open camera.")
+        return
+
+    # ============================
+    # 3. Core game parameters
+    # ============================
+    game_started = False
+    game_over = False
+    total_time = 60
+    start_time = None
+
+    # Multi-player info: player_id -> { center:(x,y), score, stay_start }
+    player_info = {}
+    max_players = 4
+    next_player_id = 1
+    distance_threshold = 80
+
+    required_stay_time = mode_params['required_stay_time']
+    score_gain = mode_params['score_gain']
+    score_loss = mode_params['score_loss']
+    spawn_cooldown_min = mode_params['spawn_cooldown_min']
+    spawn_cooldown_max = mode_params['spawn_cooldown_max']
+
+    # Retrieve camera resolution
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # Main target area: dynamic movement
+    target_size = mode_params['target_size']
+    center_x = width // 2
+    center_y = height // 2
+    t = 0
+    speed = 1.5
+    radius = 100
+    offset_angle_x = random.random() * 2 * math.pi
+    offset_angle_y = random.random() * 2 * math.pi
+
+    # Temporary zones (power-up / punishment)
+    ephemeral_zones = []
+    next_spawn_time = time.time() + 5  # start spawning after 5s
+
+    # ============================
+    # 4. Wait for user to press "S" to start
+    # ============================
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Cannot read from camera.")
+            break
+
+        cv2.putText(frame, "Press 'S' to start, 'Q' to quit",
+                    (50, 220), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        cv2.imshow("Face/Eye Game", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('s') or key == ord('S'):
+            game_started = True
+            start_time = time.time()
+            break
+        elif key == ord('q') or key == ord('Q'):
+            cap.release()
+            cv2.destroyAllWindows()
+            return
+
+    if not game_started:
+        cap.release()
+        cv2.destroyAllWindows()
+        return
+
+    # ============================
+    # 5. Main game loop
+    # ============================
+    while game_started and not game_over:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        current_time = time.time()
+        elapsed_time = current_time - start_time
+        remaining_time = total_time - elapsed_time
+
+        if remaining_time <= 0:
+            game_over = True
+            break
+
+        # -- Update the main target area movement --
+        offset_x = int(radius * math.sin(t * 0.02 + offset_angle_x))
+        offset_y = int(radius * math.cos(t * 0.02 + offset_angle_y))
+        dynamic_center_x = center_x + offset_x
+        dynamic_center_y = center_y + offset_y
+
+        target_left   = dynamic_center_x - target_size
+        target_right  = dynamic_center_x + target_size
+        target_top    = dynamic_center_y - target_size
+        target_bottom = dynamic_center_y + target_size
+
+        # -- Detection (face or eye) --
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        detections = detector.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
+
+        matched_players = set()
+
+        for (x, y, w, h) in detections:
+            cx = x + w // 2
+            cy = y + h // 2
+
+            # Find nearest existing player
+            assigned_player_id = None
+            min_dist = float('inf')
+            for pid, info in player_info.items():
+                px, py = info['center']
+                dist = (px - cx) ** 2 + (py - cy) ** 2
+                if dist < min_dist:
+                    min_dist = dist
+                    assigned_player_id = pid
+
+            if assigned_player_id is not None and math.sqrt(min_dist) < distance_threshold:
+                player_info[assigned_player_id]['center'] = (cx, cy)
+                matched_players.add(assigned_player_id)
+            else:
+                # Create new player if capacity not reached
+                if len(player_info) < max_players:
+                    assigned_player_id = next_player_id
+                    next_player_id += 1
+                    player_info[assigned_player_id] = {
+                        'center': (cx, cy),
+                        'score': 0,
+                        'stay_start': None
+                    }
+                    matched_players.add(assigned_player_id)
+
+            # Draw rectangle and center point
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+            cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
+
+        # -- Main target area logic --
+        for pid, info in player_info.items():
+            (p_cx, p_cy) = info['center']
+            stay_start = info['stay_start']
+
+            if pid not in matched_players:
+                # Player not detected this frame => left
+                if stay_start is not None:
+                    info['score'] -= score_loss
+                info['stay_start'] = None
+                continue
+
+            # Check if inside the main target area
+            if target_left < p_cx < target_right and target_top < p_cy < target_bottom:
+                # Inside
+                if stay_start is None:
+                    info['stay_start'] = current_time
+                else:
+                    duration = current_time - stay_start
+                    if duration >= required_stay_time:
+                        # Grant score
+                        info['score'] += score_gain
+                        info['stay_start'] = None
+                        # Shift the sine wave angles to move target area
+                        offset_angle_x = random.random() * 2 * math.pi
+                        offset_angle_y = random.random() * 2 * math.pi
+            else:
+                # Left the area
+                if stay_start is not None:
+                    info['score'] -= score_loss
+                info['stay_start'] = None
+
+        # -- Power-up / Punishment zones --
+        # 1. Possibly spawn a new zone
+        if current_time > next_spawn_time:
+            zone_type = random.choice(["powerup", "negative"])
+            zone_cx = random.randint(50, width - 50)
+            zone_cy = random.randint(50, height - 50)
+            zone_radius = random.randint(30, 50)
+            zone_duration = random.randint(3, 6)
+            score_change = 15 if zone_type == "powerup" else -10
+
+            ephemeral_zones.append({
+                "type": zone_type,
+                "cx": zone_cx,
+                "cy": zone_cy,
+                "radius": zone_radius,
+                "start_time": current_time,
+                "duration": zone_duration,
+                "score_change": score_change,
+                "stay_required": 1.0,  # must stay for 1 second
+                "stay_start": {},      # track each player's stay time
+                "active": True
+            })
+
+            next_spawn_time = current_time + random.uniform(spawn_cooldown_min, spawn_cooldown_max)
+
+        # 2. Update and draw existing zones
+        for zone in ephemeral_zones:
+            if not zone["active"]:
+                continue
+            if (current_time - zone["start_time"]) >= zone["duration"]:
+                zone["active"] = False
+                continue
+
+            # Draw a circle (green for power-up, red for punishment)
+            color = (0, 255, 0) if zone["type"] == "powerup" else (0, 0, 255)
+            cv2.circle(frame, (zone["cx"], zone["cy"]), zone["radius"], color, 3)
+
+            # Check if players are inside
+            for pid, info in player_info.items():
+                px, py = info['center']
+                dist2 = (px - zone["cx"]) ** 2 + (py - zone["cy"]) ** 2
+                if dist2 < zone["radius"] ** 2:
+                    # Inside the zone
+                    if pid not in zone["stay_start"] or zone["stay_start"][pid] is None:
+                        zone["stay_start"][pid] = current_time
+                    else:
+                        if (current_time - zone["stay_start"][pid]) >= zone["stay_required"]:
+                            # Trigger score change
+                            info['score'] += zone["score_change"]
+                            # Deactivate for this player
+                            zone["stay_start"][pid] = None
+                else:
+                    zone["stay_start"][pid] = None
+
+        # Draw the main target rectangle
+        cv2.rectangle(frame, (target_left, target_top), (target_right, target_bottom), (0, 255, 0), 3)
+
+        # -- Show countdown and scores --
+        cv2.putText(frame, f"Time left: {int(remaining_time)}s",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+
+        y_offset = 60
+        for pid, info in sorted(player_info.items()):
+            score_text = f"Player {pid}: {info['score']}"
+            cv2.putText(frame, score_text, (10, y_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+            y_offset += 30
+
+        t += speed
+        cv2.imshow("Face/Eye Game", frame)
+
+        key = cv2.waitKey(30) & 0xFF
+        if key == ord('q'):
+            game_over = True
+            break
+
+    # ============================
+    # 6. Game over: determine the winner
+    # ============================
+    cap.release()
+    cv2.destroyAllWindows()
+
+    winner_id = None
+    winner_score = None
+    if len(player_info) > 0:
+        winner_id, winner_data = max(player_info.items(), key=lambda x: x[1]['score'])
+        winner_score = winner_data['score']
+
+    if winner_id is None or winner_score <= 0:
+        print("Game Over! No Winner.")
+    else:
+        print(f"Game Over! Winner is Player {winner_id} with score = {winner_score}.")
+
+if __name__ == "__main__":
+    main()
